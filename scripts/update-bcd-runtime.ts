@@ -12,21 +12,62 @@ import {promisify} from "node:util";
 import fs from "fs-extra";
 
 import chalk from "chalk-template";
+import {
+  compare as compareVersions,
+  compareVersions as compareVersionsSort,
+} from "compare-versions";
 import esMain from "es-main";
+import {Octokit} from "@octokit/rest";
 import yargs from "yargs";
 import {hideBin} from "yargs/helpers";
 
 const execFileP = promisify(execFile);
 
 const RUNTIME_DATA_DELIMITER = "RUNTIME_DATA_START";
+const FEATURE_RELEASE_TAG = /^v(\d+\.\d+\.0)$/;
 
 interface Options {
   runtimeCompat: string;
   from: string;
   to: string;
   outputDir: string;
+  skipExisting: boolean;
   skipUpdate: boolean;
 }
+
+/**
+ * List Node.js feature releases (X.Y.0) between two versions inclusive,
+ * sorted ascending. Hits the public GitHub API; honors GITHUB_TOKEN for
+ * higher rate limits if set.
+ */
+const enumerateFeatureReleases = async (
+  from: string,
+  to: string,
+): Promise<string[]> => {
+  if (compareVersions(from, to, ">")) {
+    throw new Error(`--from (${from}) must be <= --to (${to})`);
+  }
+  const octokit = new Octokit({auth: process.env.GITHUB_TOKEN});
+  const releases = await octokit.paginate(octokit.repos.listReleases, {
+    owner: "nodejs",
+    repo: "node",
+    per_page: 100,
+  });
+  const versions = releases
+    .map((r) => r.tag_name.match(FEATURE_RELEASE_TAG)?.[1])
+    .filter((v): v is string => Boolean(v))
+    .filter(
+      (v) =>
+        compareVersions(v, from, ">=") && compareVersions(v, to, "<="),
+    )
+    .sort(compareVersionsSort);
+  if (versions.length === 0) {
+    throw new Error(
+      `No Node.js feature releases found between ${from} and ${to}`,
+    );
+  }
+  return versions;
+};
 
 /**
  * Run a command under a specific Node.js version managed by nvm.
@@ -166,18 +207,34 @@ const main = async (opts: Options) => {
   }
 
   await fs.mkdirp(opts.outputDir);
-  await buildRuntimeCompat(opts.runtimeCompat);
 
-  const fromPath = await generateReport(
-    opts.runtimeCompat,
-    opts.from,
-    opts.outputDir,
+  const versions = await enumerateFeatureReleases(opts.from, opts.to);
+  console.log(
+    chalk`{cyan Found ${String(versions.length)} feature release(s) in [${opts.from}, ${opts.to}]: ${versions.join(", ")}}`,
   );
-  const toPath = await generateReport(
-    opts.runtimeCompat,
-    opts.to,
-    opts.outputDir,
-  );
+
+  const reportPaths: string[] = [];
+  const toGenerate: string[] = [];
+  for (const version of versions) {
+    const reportPath = path.join(opts.outputDir, `node-${version}.json`);
+    if (opts.skipExisting && (await fs.pathExists(reportPath))) {
+      console.log(
+        chalk`{gray Reusing existing report for ${version}: ${reportPath}}`,
+      );
+      reportPaths.push(reportPath);
+    } else {
+      toGenerate.push(version);
+    }
+  }
+
+  if (toGenerate.length > 0) {
+    await buildRuntimeCompat(opts.runtimeCompat);
+    for (const version of toGenerate) {
+      reportPaths.push(
+        await generateReport(opts.runtimeCompat, version, opts.outputDir),
+      );
+    }
+  }
 
   if (opts.skipUpdate) {
     console.log(
@@ -186,7 +243,7 @@ const main = async (opts: Options) => {
     return;
   }
 
-  await runUpdateBcd([fromPath, toPath]);
+  await runUpdateBcd(reportPaths);
 };
 
 /* c8 ignore start */
@@ -194,7 +251,9 @@ if (esMain(import.meta)) {
   const {argv}: {argv: any} = yargs(hideBin(process.argv))
     .usage(
       "$0 --runtime-compat <path> --from <version> --to <version>\n\n" +
-        "Generate runtime-compat reports for two Node.js versions via nvm and update BCD.",
+        "Generate runtime-compat reports for every Node.js feature release " +
+        "(X.Y.0) between --from and --to (inclusive) and update BCD. Releases " +
+        "are discovered via the GitHub API.",
     )
     .option("runtime-compat", {
       describe: "Path to a unjs/runtime-compat checkout",
@@ -202,12 +261,15 @@ if (esMain(import.meta)) {
       demandOption: true,
     })
     .option("from", {
-      describe: "Baseline Node.js version (nvm specifier, e.g. 25, 25.5.0)",
+      describe:
+        "Lowest Node.js feature release to include (e.g. 25.0.0). " +
+        "Pass the highest version BCD already has data for so update-bcd can " +
+        "pinpoint version_added.",
       type: "string",
       demandOption: true,
     })
     .option("to", {
-      describe: "New Node.js version (nvm specifier, e.g. 26, 26.0.0)",
+      describe: "Highest Node.js feature release to include (e.g. 26.0.0)",
       type: "string",
       demandOption: true,
     })
@@ -215,6 +277,11 @@ if (esMain(import.meta)) {
       describe: "Where to write the generated runtime-compat data.json files",
       type: "string",
       default: "./generated/runtime-compat",
+    })
+    .option("skip-existing", {
+      describe: "Reuse reports already present in --output-dir",
+      type: "boolean",
+      default: false,
     })
     .option("skip-update", {
       describe: "Generate the reports but do not run update-bcd",
@@ -227,6 +294,7 @@ if (esMain(import.meta)) {
     from: argv.from as string,
     to: argv.to as string,
     outputDir: path.resolve(argv.outputDir as string),
+    skipExisting: argv.skipExisting as boolean,
     skipUpdate: argv.skipUpdate as boolean,
   });
 }
