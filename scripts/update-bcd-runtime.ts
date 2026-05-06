@@ -21,6 +21,8 @@ import {Octokit} from "@octokit/rest";
 import yargs from "yargs";
 import {hideBin} from "yargs/helpers";
 
+import {getBCDDir} from "../lib/constants.js";
+
 const execFileP = promisify(execFile);
 
 const RUNTIME_DATA_DELIMITER = "RUNTIME_DATA_START";
@@ -41,13 +43,13 @@ interface Options {
  * higher rate limits if set.
  */
 const enumerateFeatureReleases = async (
+  octokit: Octokit,
   from: string,
   to: string,
 ): Promise<string[]> => {
   if (compareVersions(from, to, ">")) {
     throw new Error(`--from (${from}) must be <= --to (${to})`);
   }
-  const octokit = new Octokit({auth: process.env.GITHUB_TOKEN});
   const releases = await octokit.paginate(octokit.repos.listReleases, {
     owner: "nodejs",
     repo: "node",
@@ -67,6 +69,106 @@ const enumerateFeatureReleases = async (
     );
   }
   return versions;
+};
+
+interface NodeReleaseMeta {
+  release_date: string;
+  release_notes: string;
+  status: string;
+  engine: string;
+  engine_version: string;
+}
+
+/**
+ * Add any of `versions` that are missing from BCD's browsers/nodejs.json.
+ * Release date and V8 version are pulled from GitHub release metadata; if a
+ * release body doesn't mention V8, the engine version is inherited from the
+ * highest existing release below the new one (V8 majors are stable within
+ * a Node major). After insertion, the highest release across the whole map
+ * is marked "current" and any other "current" entries are demoted.
+ */
+const ensureBcdReleases = async (
+  octokit: Octokit,
+  bcdDir: string,
+  versions: string[],
+): Promise<void> => {
+  const filePath = path.join(bcdDir, "browsers", "nodejs.json");
+  const data = JSON.parse(await fs.readFile(filePath, "utf8"));
+  const releases = data.browsers.nodejs.releases as Record<
+    string,
+    NodeReleaseMeta
+  >;
+
+  const missing = versions.filter((v) => !releases[v]);
+  if (missing.length === 0) {
+    console.log(
+      chalk`{gray All ${String(versions.length)} release(s) already in BCD.}`,
+    );
+    return;
+  }
+
+  console.log(
+    chalk`{cyan Adding ${String(missing.length)} missing release(s) to BCD: ${missing.join(", ")}}`,
+  );
+
+  for (const v of missing) {
+    const {data: release} = await octokit.repos.getReleaseByTag({
+      owner: "nodejs",
+      repo: "node",
+      tag: `v${v}`,
+    });
+    const body = release.body ?? "";
+    const v8Match = body.match(/V8 (\d+\.\d+)/);
+    const engineVersion = v8Match
+      ? v8Match[1]
+      : inheritEngineVersion(releases, v);
+    if (!release.published_at) {
+      throw new Error(`Release v${v} has no published_at on GitHub`);
+    }
+    releases[v] = {
+      release_date: release.published_at.slice(0, 10),
+      release_notes: `https://nodejs.org/en/blog/release/v${v}`,
+      status: "retired",
+      engine: "V8",
+      engine_version: engineVersion,
+    };
+  }
+
+  // Re-sort the releases map by semver so the file stays canonically ordered.
+  data.browsers.nodejs.releases = Object.fromEntries(
+    Object.entries(releases).sort(([a], [b]) => compareVersionsSort(a, b)),
+  );
+
+  // Highest version overall is "current"; demote any other "current" entries.
+  const sortedVersions = Object.keys(data.browsers.nodejs.releases);
+  const highest = sortedVersions[sortedVersions.length - 1];
+  for (const [v, meta] of Object.entries(
+    data.browsers.nodejs.releases as Record<string, NodeReleaseMeta>,
+  )) {
+    if (v === highest) {
+      meta.status = "current";
+    } else if (meta.status === "current") {
+      meta.status = "retired";
+    }
+  }
+
+  await fs.writeFile(filePath, JSON.stringify(data, null, 2) + "\n");
+  console.log(chalk`{green Wrote ${filePath}}`);
+};
+
+const inheritEngineVersion = (
+  releases: Record<string, NodeReleaseMeta>,
+  version: string,
+): string => {
+  const lower = Object.keys(releases)
+    .filter((v) => compareVersions(v, version, "<"))
+    .sort(compareVersionsSort);
+  if (lower.length === 0) {
+    throw new Error(
+      `Cannot determine engine_version for ${version}: release notes did not mention V8 and no prior release exists in BCD to inherit from`,
+    );
+  }
+  return releases[lower[lower.length - 1]].engine_version;
 };
 
 /**
@@ -208,10 +310,17 @@ const main = async (opts: Options) => {
 
   await fs.mkdirp(opts.outputDir);
 
-  const versions = await enumerateFeatureReleases(opts.from, opts.to);
+  const octokit = new Octokit({auth: process.env.GITHUB_TOKEN});
+  const versions = await enumerateFeatureReleases(
+    octokit,
+    opts.from,
+    opts.to,
+  );
   console.log(
     chalk`{cyan Found ${String(versions.length)} feature release(s) in [${opts.from}, ${opts.to}]: ${versions.join(", ")}}`,
   );
+
+  await ensureBcdReleases(octokit, getBCDDir(), versions);
 
   const reportPaths: string[] = [];
   const toGenerate: string[] = [];
