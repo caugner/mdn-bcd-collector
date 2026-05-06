@@ -217,6 +217,23 @@ const ensureNodeInstalled = async (version: string): Promise<void> => {
 };
 
 /**
+ * Return the set of concrete Node.js versions already installed under
+ * $NVM_DIR/versions/node (e.g. {"25.0.0", "26.0.0"}). Returns an empty
+ * set if nvm is not installed or has never installed a Node version.
+ */
+const listInstalledNodeVersions = async (): Promise<Set<string>> => {
+  const nvmDir = process.env.NVM_DIR || path.join(os.homedir(), ".nvm");
+  const versionsDir = path.join(nvmDir, "versions", "node");
+  try {
+    const entries = await fs.readdir(versionsDir);
+    return new Set(entries.map((e) => e.replace(/^v/, "")));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return new Set();
+    throw err;
+  }
+};
+
+/**
  * Run a command under a specific Node.js version managed by nvm. Assumes
  * the version has already been installed via ensureNodeInstalled.
  * @returns stdout from the command (nvm's own output is redirected to stderr).
@@ -374,12 +391,20 @@ const main = async (opts: Options) => {
 
   if (toGenerate.length > 0) {
     await buildRuntimeCompat(opts.runtimeCompat);
-    console.log(
-      chalk`{cyan Installing ${String(toGenerate.length)} Node.js version(s) via nvm...}`,
-    );
-    for (const version of toGenerate) {
-      console.log(chalk`  {gray nvm install ${version}}`);
-      await ensureNodeInstalled(version);
+    const installed = await listInstalledNodeVersions();
+    const toInstall = toGenerate.filter((v) => !installed.has(v));
+    if (toInstall.length > 0) {
+      console.log(
+        chalk`{cyan Installing ${String(toInstall.length)} Node.js version(s) via nvm (${String(toGenerate.length - toInstall.length)} already installed)...}`,
+      );
+      for (const version of toInstall) {
+        console.log(chalk`  {gray nvm install ${version}}`);
+        await ensureNodeInstalled(version);
+      }
+    } else {
+      console.log(
+        chalk`{gray All ${String(toGenerate.length)} Node.js version(s) already installed.}`,
+      );
     }
     console.log(
       chalk`{cyan Generating ${String(toGenerate.length)} report(s) with concurrency ${String(opts.concurrency)}...}`,
