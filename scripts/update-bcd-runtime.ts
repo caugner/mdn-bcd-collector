@@ -6,6 +6,7 @@
 // See the LICENSE file for copyright details
 //
 
+import os from "node:os";
 import path from "node:path";
 import {execFile, spawn} from "node:child_process";
 import {promisify} from "node:util";
@@ -35,7 +36,32 @@ interface Options {
   outputDir: string;
   skipExisting: boolean;
   skipUpdate: boolean;
+  concurrency: number;
 }
+
+/**
+ * Run an async task over each item with at most `limit` in flight.
+ * Workers share a single iterator, so each one pulls the next pending item
+ * as it finishes — no synchronization needed beyond JS's single-threaded
+ * execution between awaits. Results preserve input order.
+ */
+const runWithConcurrency = async <T, R>(
+  items: T[],
+  limit: number,
+  task: (item: T) => Promise<R>,
+): Promise<R[]> => {
+  const results: R[] = new Array(items.length);
+  const queue = items.entries();
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+  await Promise.all(
+    Array.from({length: workerCount}, async () => {
+      for (const [i, item] of queue) {
+        results[i] = await task(item);
+      }
+    }),
+  );
+  return results;
+};
 
 /**
  * List Node.js feature releases (X.Y.0) between two versions inclusive,
@@ -338,11 +364,16 @@ const main = async (opts: Options) => {
 
   if (toGenerate.length > 0) {
     await buildRuntimeCompat(opts.runtimeCompat);
-    for (const version of toGenerate) {
-      reportPaths.push(
-        await generateReport(opts.runtimeCompat, version, opts.outputDir),
-      );
-    }
+    console.log(
+      chalk`{cyan Generating ${String(toGenerate.length)} report(s) with concurrency ${String(opts.concurrency)}...}`,
+    );
+    const generated = await runWithConcurrency(
+      toGenerate,
+      opts.concurrency,
+      (version) =>
+        generateReport(opts.runtimeCompat, version, opts.outputDir),
+    );
+    reportPaths.push(...generated);
   }
 
   if (opts.skipUpdate) {
@@ -392,6 +423,11 @@ if (esMain(import.meta)) {
       type: "boolean",
       default: false,
     })
+    .option("concurrency", {
+      describe: "Number of runtime-compat runs to execute in parallel",
+      type: "number",
+      default: os.cpus().length,
+    })
     .option("skip-update", {
       describe: "Generate the reports but do not run update-bcd",
       type: "boolean",
@@ -405,6 +441,7 @@ if (esMain(import.meta)) {
     outputDir: path.resolve(argv.outputDir as string),
     skipExisting: argv.skipExisting as boolean,
     skipUpdate: argv.skipUpdate as boolean,
+    concurrency: argv.concurrency as number,
   });
 }
 /* c8 ignore stop */
