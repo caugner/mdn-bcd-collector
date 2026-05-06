@@ -197,11 +197,28 @@ const inheritEngineVersion = (
   return releases[lower[lower.length - 1]].engine_version;
 };
 
+// nvm is a shell function, so it must be sourced inside each subshell.
+const NVM_BOOTSTRAP = `
+  export NVM_DIR="\${NVM_DIR:-$HOME/.nvm}"
+  if [ ! -s "$NVM_DIR/nvm.sh" ]; then
+    echo "nvm not found at $NVM_DIR/nvm.sh — set NVM_DIR or install nvm" >&2
+    exit 1
+  fi
+  . "$NVM_DIR/nvm.sh"
+`;
+
 /**
- * Run a command under a specific Node.js version managed by nvm.
- * @param version - The nvm version specifier (e.g. "25", "26.0.0", "lts/jod").
- * @param cmd - The shell command to run after `nvm use`.
- * @param cwd - Working directory for the command.
+ * Ensure a Node.js version is installed via nvm. Run sequentially across
+ * versions to avoid network saturation; nvm install is idempotent.
+ */
+const ensureNodeInstalled = async (version: string): Promise<void> => {
+  const script = `set -e\n${NVM_BOOTSTRAP}\n    nvm install "${version}" >&2\n`;
+  await execFileP("bash", ["-c", script]);
+};
+
+/**
+ * Run a command under a specific Node.js version managed by nvm. Assumes
+ * the version has already been installed via ensureNodeInstalled.
  * @returns stdout from the command (nvm's own output is redirected to stderr).
  */
 const runUnderNvm = async (
@@ -209,16 +226,9 @@ const runUnderNvm = async (
   cmd: string,
   cwd: string,
 ): Promise<string> => {
-  // nvm is a shell function, so it must be sourced inside the subshell.
   const script = `
     set -e
-    export NVM_DIR="\${NVM_DIR:-$HOME/.nvm}"
-    if [ ! -s "$NVM_DIR/nvm.sh" ]; then
-      echo "nvm not found at $NVM_DIR/nvm.sh — set NVM_DIR or install nvm" >&2
-      exit 1
-    fi
-    . "$NVM_DIR/nvm.sh"
-    nvm install "${version}" >&2
+    ${NVM_BOOTSTRAP}
     nvm use "${version}" >&2
     ${cmd}
   `;
@@ -364,6 +374,13 @@ const main = async (opts: Options) => {
 
   if (toGenerate.length > 0) {
     await buildRuntimeCompat(opts.runtimeCompat);
+    console.log(
+      chalk`{cyan Installing ${String(toGenerate.length)} Node.js version(s) via nvm...}`,
+    );
+    for (const version of toGenerate) {
+      console.log(chalk`  {gray nvm install ${version}}`);
+      await ensureNodeInstalled(version);
+    }
     console.log(
       chalk`{cyan Generating ${String(toGenerate.length)} report(s) with concurrency ${String(opts.concurrency)}...}`,
     );
