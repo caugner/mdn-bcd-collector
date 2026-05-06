@@ -35,6 +35,7 @@
     "test:types": "tsc -p . --noEmit",
     "selenium": "tsx scripts/selenium.ts",
     "update-bcd": "tsx scripts/update-bcd.ts",
+    "update-bcd-runtime": "tsx scripts/update-bcd-runtime.ts",
     "feature-coverage": "tsx scripts/feature-coverage.ts",
     "find-missing-features": "tsx scripts/feature-coverage.ts",
     "find-missing-reports": "tsx scripts/find-missing-reports.ts",
