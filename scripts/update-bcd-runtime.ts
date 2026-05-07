@@ -64,6 +64,21 @@ const runWithConcurrency = async <T, R>(
 };
 
 /**
+ * Resolve a GitHub token. Prefer GITHUB_TOKEN, fall back to `gh auth token`
+ * if the GitHub CLI is signed in. Returns undefined if neither is available;
+ * Octokit will then make unauthenticated requests (60/hour rate limit).
+ */
+const resolveGitHubToken = async (): Promise<string | undefined> => {
+  if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN;
+  try {
+    const {stdout} = await execFileP("gh", ["auth", "token"]);
+    return stdout.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+/**
  * List Node.js feature releases (X.Y.0) between two versions inclusive,
  * sorted ascending. Hits the public GitHub API; honors GITHUB_TOKEN for
  * higher rate limits if set.
@@ -363,7 +378,13 @@ const main = async (opts: Options) => {
 
   await fs.mkdirp(opts.outputDir);
 
-  const octokit = new Octokit({auth: process.env.GITHUB_TOKEN});
+  const token = await resolveGitHubToken();
+  if (!token) {
+    console.log(
+      chalk`{yellow No GitHub token found (GITHUB_TOKEN unset, gh CLI not signed in). Falling back to unauthenticated requests; rate limit is 60/hour.}`,
+    );
+  }
+  const octokit = new Octokit({auth: token});
   const versions = await enumerateFeatureReleases(
     octokit,
     opts.from,
