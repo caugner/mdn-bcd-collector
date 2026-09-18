@@ -417,6 +417,20 @@ describe("rendered pages", () => {
     assert.equal(res.status, 200);
     const text = await res.text();
     assert.match(text, /mdn-bcd-collector/);
+    assert.doesNotMatch(text, /<datalist/);
+    assert.match(
+      text,
+      /id="test-selection" name="testSelection"[^>]*role="combobox"/,
+    );
+    assert.match(text, /id="test-options" role="listbox"/);
+    assert.match(text, /maxVisibleTests = 100/);
+    assert.match(text, /keyIdentifier/);
+    assert.match(text, /testOptions\.style\.display/);
+    assert.match(text, /Type to filter tests/);
+    assert.match(text, /onpropertychange/);
+    assert.match(text, /renderedOptions/);
+    assert.doesNotMatch(text, /testOptions\.querySelectorAll/);
+    assert.doesNotMatch(text, /testCombobox\.contains/);
   });
 
   it("404", async () => {

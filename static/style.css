@@ -198,6 +198,7 @@ h1 {
   max-width: -webkit-max-content;
   max-width: -moz-max-content;
   max-width: max-content;
+  overflow: visible;
   margin: auto;
   margin-top: 2em;
   padding: 2em;
@@ -211,6 +212,13 @@ h1 {
 #run-tests #test-entry {
   display: block;
 }
+#test-combobox {
+  position: relative;
+  display: inline-block;
+  width: 240px;
+  max-width: 70%;
+  vertical-align: top;
+}
 #run-tests .browserinfo {
   margin-bottom: 0;
 }
@@ -220,8 +228,48 @@ h1 {
 
 #test-selection {
   padding-left: 16px;
-  width: 240px;
-  max-width: 70%;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+}
+
+#test-options {
+  display: none;
+  position: absolute;
+  z-index: 1;
+  top: 100%;
+  right: 0;
+  left: 0;
+  max-height: 16em;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  border: 1px solid #9900a1;
+  background: white;
+  color: black;
+  list-style: none;
+  text-align: left;
+}
+
+#test-options [role="option"] {
+  overflow: hidden;
+  padding: 4px 8px;
+  cursor: pointer;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#test-options [role="option"][aria-selected="true"],
+#test-options [role="option"]:hover {
+  background: #d2bbfd;
+}
+
+#test-results-status {
+  display: inline-block;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
 }
 
 #supported-browsers {
